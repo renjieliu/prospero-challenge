@@ -1,5 +1,8 @@
-# prospero-challenge
-To get the result of prospero challenge with SQL - [Prospero Challenge](https://www.mattkeeter.com/projects/prospero/)
+# Background
+ - [Prospero Challenge](https://www.mattkeeter.com/projects/prospero/)
+
+# Goal of this project
+To get the result of prospero challenge with SQL, to generate the final value matrix within 2 hours on a Raspberry Pi
 
 # To do 
 
