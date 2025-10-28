@@ -1,0 +1,300 @@
+-- Background: https://www.mattkeeter.com/projects/prospero/ 
+
+-- This script is for PostgreSQL
+
+/* Steps to solve the problem in SQL
+
+1. Define the image size, 128 
+2. From -1 to 1, evenly distribute the 128 numbers
+3. Generate a grid, from (-1,-1) to (1,1), Total cell number is 128*128 
+4. For each point in the panel, assign the value, based on the calculation on step 2 
+   4.1 from left to right, the number is -1 to 1 
+   4.2 from up to down, the number is 1 to -1
+   4.3 for each point, there should be 2 numbers, one is from X-axis, one is from Y-axis. These 2 numbers will be used for calculation later
+5. For each point in the panel, go through the whole prospero instruction, get the result
+    -- All the operations will have step_id, operation, op1, op2 and result
+    -- Concatenate the entire prospero instruction as a string , each step delimited with `, and for each step, step id, operand, and result are delimited with |
+    -- For the current step, unpack the concat string, get the current step 
+    -- Get the op1 and op2, if it's a reference to the previous step, get the result of the corresponding step, with prospero_get_step_res
+    -- Compute current operation
+    -- Update the concatenated string, this string will be used for next iteration in the recursive CTE
+    -- Get the result with step_id = total_count-1 from the prospero table
+
+6. The final result will be either 0 or 1 for each point
+    -- 1 if the computed final result is < 0 
+    -- 0 if the computed final resilt is >= 0
+
+7. Generate the final output
+
+
+Takeaways - 
+
+1. In order for the recursive CTE to preserve the previous iteration result, a string is used and updated for each iteration, and the string is then passed to the next iteration
+2. SQL Server will not allow select from a temp table in the cross apply part.
+3. Instead of using a lot of cross apply and recursive CTEs - put the reusable part into a function to make the code cleaner 
+4. Using a wrap function to wrap the compute and update process. So for each point, we can retrive the final output by just calling the wrapper function
+
+
+*/
+
+-- clean up the table for the ones imported with scientific notion
+
+--select * from prospero_instruction 
+--where op1 like '%e[+-]%' or op2 like '%e[+-]%'
+
+--update prospero_instruction set op1 = '100000000'
+--where step = '_1134'
+
+--update prospero_instruction set op1 = cast( cast( 4.76837 /  power(10, 7) as decimal(38,10)) as varchar(100))
+--where step = '_1069'
+
+-- create or alter proc usp_prospero as
+-- begin
+
+drop table if exists temp tmp_space
+
+; with cte as 
+(select loc = cast(-1 as decimal(38,10)), iter = 1, starting = -1, ending = 1, total_cnt = 128.0
+union all 
+select loc = cast(-1 + (ending-starting) * ( iter / (total_cnt - 1))  as decimal(38,10))
+, iter+1
+, starting
+, ending
+, total_cnt  
+ from cte 
+where iter <= total_cnt-1
+)
+select * into #tmp_space
+ from cte 
+option (maxrecursion 0)
+
+--for grid_x , it's just repeat the numbers for each row
+drop table if exists #grid_x
+
+; with cte_grid_x as 
+(
+    select col = iter, row = 1, val = loc, total_cnt from #tmp_space
+    union all 
+    select col, row + 1, val, total_cnt from cte_grid_x
+    where row < total_cnt 
+) 
+select * into #grid_x from cte_grid_x 
+option (maxrecursion 0)
+
+-- for grid_y, it's a transpose of the space array, and repeat for 128 times
+
+drop table if exists #grid_y
+
+; with cte_grid_y as 
+(
+select 
+row = col 
+, col = row  -- row becomes column
+, val 
+, total_cnt 
+from #grid_x
+where col = 1 
+
+union all 
+
+select
+curr.row+1
+, col = x.row
+, x.val
+, x.total_cnt
+from cte_grid_y curr 
+inner join #grid_x x on x.col = curr.row + 1 and x.row = curr.col
+)
+select * into #grid_y from cte_grid_y 
+option (maxrecursion 0 )
+
+
+
+drop table if exists #grid 
+
+select 
+rn = ROW_NUMBER() over(order by x.[row], x.col )
+, 
+x.[row], x.col, x = x.val, y = y.val 
+into #grid
+from #grid_x x inner join #grid_y y 
+on x.[row] = y.[row] and x.col = y.col
+
+
+drop table if exists #prospero
+
+select 
+step_id  = cast(CONVERT(varbinary, step_padded ,2) as int )
+, step
+, op = [action] 
+, op1 = case when op1 = 'NULL' then '' else op1 end
+, op1_ref = cast(NULL as int)
+, op2 = case when op2 = 'NULL' then '' else op2 end
+, op2_ref = cast(NULL as int)
+, res
+into #prospero
+from dbo.prospero_instruction
+cross apply (select step_cleaned =  upper(REPLACE(step, '_', '') ) ) _
+cross apply (select step_padded = case when len(step_cleaned) % 2 = 0 then step_cleaned else '0' + step_cleaned end) __
+
+
+
+update tgt 
+set tgt.op1_ref = (select step_id from #prospero where step = tgt.op1)
+from #prospero tgt 
+where left(op1, 1) = '_'
+
+
+update tgt 
+set tgt.op2_ref = (select step_id from #prospero where step = tgt.op2)
+from #prospero tgt 
+where left(op2, 1) = '_'
+
+
+
+-- select * from #prospero
+-- go 
+-- ; 
+
+
+
+-- 128,876,544
+
+-- select cnt = count(*) from #grid,  #prospero
+
+-- select * from #grid, #prospero 
+-- where rn = 1 
+
+
+
+
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+
+
+-- create index idx1 on #prospero(step_id)
+create clustered index idx on #prospero(step_id)
+
+
+-------------------------------------------------------------------
+-------------------------------------------------------------------
+
+
+set nocount on; 
+
+drop table if exists prospero_final_res
+
+select 
+rn = 0
+, res = cast(null as decimal(38, 10) ) into prospero_final_res
+from #prospero where 1 = 0
+
+
+declare @x decimal(38, 10)
+declare @y decimal(38, 10)
+declare @rn int = 1
+
+while @rn <= (select count(*) from #grid ) -- total number of points to be calculated
+begin
+
+  select 
+  @x = x
+  , @y = y
+  from #grid
+  where rn = @rn
+
+  drop table if exists #tmp_res
+
+  select 
+  step_id 
+  , res 
+  into #tmp_res 
+  from #prospero 
+  where 1 = 0
+
+  create clustered index idx_res on #tmp_res(step_id)
+
+
+  declare @currStep int = 0 
+  declare @totalStep int = (select count(step_id) from #prospero) -- 0 
+
+  while @currStep < @totalStep -- (select count(*) from #prospero)
+  BEGIN
+
+
+    declare @op varchar(100)
+    declare @op1 decimal(38, 10)
+    declare @op2 decimal(38, 10)
+    declare @res decimal(38, 10)
+
+    select 
+    @op = op 
+    , @op1 = case when left(op1, 1) = '_'  then (select res from #tmp_res where step_id = op1_ref)
+                  else op1 
+             end   
+
+    , @op2 = case when left(op2, 1) = '_'  then (select res from #tmp_res where step_id = op2_ref) --  ts2.res
+                    else op2 
+             end 
+    from #prospero p 
+	--left outer join #tmp_res ts1 on p.op1_ref = ts1.step_id 
+	--left outer join #tmp_res ts2 on p.op2_ref = ts2.step_id 
+    where p.step_id = @currStep
+    
+    
+   
+    set @res = case when @op ='const' then @op1
+                    when @op = 'add' then @op1 + @op2 
+                    when @op = 'max' then iif( @op1 >= @op2,  @op1, @op2)
+                    when @op = 'min' then iif( @op1 <= @op2, @op1, @op2) 
+                    when @op = 'mul' then @op1 *  @op2
+                    when @op = 'neg' then -@op1
+                    when @op = 'sqrt' then power(@op1, 0.5)
+                    when @op = 'square' then power(@op1,  2)
+                    when @op = 'sub' then @op1 - @op2
+                    when @op = 'var-x' then  @x
+                    when @op = 'var-y' then  @y
+                    else -999999999
+                end
+
+    insert into #tmp_res
+    select @currStep, @res
+    
+
+    --if @currStep % 1000 = 0 
+    --begin 
+    --  print @currStep 
+    --end 
+
+    set @currStep = @currStep + 1
+
+  END 
+ 
+  insert into prospero_final_res 
+  select 
+  @rn
+  , res
+  from #tmp_res
+  where step_id = @totalStep - 1
+
+  declare @msg varchar(100) =  'current point:' + cast(@rn as varchar(10))
+
+  raiserror( @msg  , -1, -1) with nowait
+
+  set @rn = @rn + 1 
+
+
+END
+
+select rn, res = iif(res >=0, '0', '1') , res from prospero_final_res
+ 
+
+
+
+-- end
+
+
+-- exec dbo.usp_prospero
+
+
+
