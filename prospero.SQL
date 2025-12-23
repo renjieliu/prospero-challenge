@@ -31,9 +31,8 @@
 Takeaways - 
 
 1. In order for the recursive CTE to preserve the previous iteration result, a string is used and updated for each iteration, and the string is then passed to the next iteration
-2. SQL Server will not allow select from a temp table in the cross apply part.
-3. Instead of using a lot of cross apply and recursive CTEs - put the reusable part into a function to make the code cleaner 
-4. Using a wrap function to wrap the compute and update process. So for each point, we can retrive the final output by just calling the wrapper function
+2. Instead of using a lot of cross apply and recursive CTEs - put the reusable part into a function to make the code cleaner 
+3. Using a wrap function to wrap the compute and update process. So for each point, we can retrive the final output by just calling the wrapper function
 
 
 */
